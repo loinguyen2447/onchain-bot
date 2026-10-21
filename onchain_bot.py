@@ -84,7 +84,7 @@ TF_DAYS = {"24h": 1, "7d": 7, "30d": 30}
 KEEP_SNAPSHOTS = 40   # đủ cho mốc 30 ngày + 7 cột ngày
 DAILY_POINTS = 8      # 8 snapshot -> 7 cột ngày
 MAX_MESSAGE = 3900    # Telegram giới hạn 4096 ký tự, chừa biên an toàn
-USER_AGENT = "wedtaichinh-onchain-bot/1.1 (+linux mint)"
+USER_AGENT = "onchain-cex-bot/1.1 (+linux mint)"
 
 
 # ---------------------------------------------------------------------------
