@@ -10,11 +10,15 @@ Binance, OKX, Coinbase, Bybit, Bitfinex, Robinhood, Bitget, Gate.io — dữ li�
 
 ## 1. Cài bằng một lệnh (khuyến nghị)
 
+Repo riêng cho bot (không nằm trong repo web `wedtaichinh`).
+
 ```bash
-git clone https://github.com/loinguyen2447/wedtaichinh.git
-cd wedtaichinh/bot
+git clone https://github.com/loinguyen2447/onchain-bot.git
+cd onchain-bot
 bash install.sh
 ```
+
+Nếu bạn đặt tên repo khác thì thay URL cho đúng.
 
 Script sẽ hỏi **token** (lấy từ [@BotFather](https://t.me/BotFather): `/newbot`) — token nhập ẩn,
 không hiện lên màn hình. Sau đó nó chờ bạn mở Telegram bấm **Start** với bot và **tự lấy chat id**,
@@ -61,7 +65,7 @@ systemctl --user status onchain-bot
 ```bash
 crontab -e
 # 8h sáng và 8h tối mỗi ngày
-0 8,20 * * * cd $HOME/wedtaichinh/bot && /usr/bin/python3 onchain_bot.py --once >> bot.log 2>&1
+0 8,20 * * * cd $HOME/onchain-bot && /usr/bin/python3 onchain_bot.py --once >> bot.log 2>&1
 ```
 
 ## 4. Kết nối Telegram của bạn

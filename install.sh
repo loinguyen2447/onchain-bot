@@ -79,7 +79,7 @@ PLACEHOLDER_CHAT="123456789"
 if [ ! -f .env ]; then
   cp .env.example .env
   chmod 600 .env
-  echo "📝 Đã tạo bot/.env"
+  echo "📝 Đã tạo .env"
 fi
 
 # ---------- Token ----------
@@ -104,7 +104,7 @@ if ! echo "$TOKEN" | grep -Eq '^[0-9]+:[A-Za-z0-9_-]+$'; then
   exit 1
 fi
 set_env TELEGRAM_BOT_TOKEN "$TOKEN"
-echo "✅ Đã lưu token vào bot/.env"
+echo "✅ Đã lưu token vào .env"
 
 # ---------- Kiểm tra token với Telegram ----------
 if [ "${SKIP_TOKEN_CHECK:-0}" != "1" ]; then
