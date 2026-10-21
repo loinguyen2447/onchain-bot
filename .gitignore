@@ -1,0 +1,10 @@
+# Cấu hình bí mật
+.env
+
+# Dữ liệu cache DefiLlama + state.json
+cache/
+
+# Log & môi trường ảo
+*.log
+__pycache__/
+.venv/
