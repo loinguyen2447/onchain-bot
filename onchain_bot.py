@@ -634,11 +634,19 @@ def build_report(records, coin, tf, prices, exchanges=None):
         header.append("<i>So sánh giữa 2 lần chốt ngày 00:00 UTC, cách nhau %.0f giờ</i>" % hours)
     blocks.append("\n".join(header))
 
+    # Tổng gộp = tổng phần tăng + tổng phần giảm của các sàn. Là mức lưu chuyển RÒNG
+    # của dự trữ (mỗi sàn chỉ tính một chiều), không phải khối lượng nạp/rút thật.
+    gross = stats["rise"] + stats["fall"]
+
     overview = [
         "<b>💰 %s — tổng hợp %d sàn</b>" % (coin, stats["tracked"]),
         "• Dự trữ hiện tại: <b>%s</b>%s" % (fmt_coin(stats["holdings"], coin), usd_note(stats["holdings"], coin, prices)),
-        "• ▲ Sàn TĂNG dự trữ: <b>%s</b>%s" % (fmt_coin(stats["rise"], coin, True), usd_note(stats["rise"], coin, prices)),
-        "• ▼ Sàn GIẢM dự trữ: <b>%s</b>%s" % (fmt_coin(stats["fall"], coin, False), usd_note(stats["fall"], coin, prices)),
+        "• ▲ Tổng tăng dự trữ (coin vào ví sàn): <b>%s</b>%s"
+        % (fmt_coin(stats["rise"], coin, True), usd_note(stats["rise"], coin, prices)),
+        "• ▼ Tổng giảm dự trữ (coin rời ví sàn): <b>%s</b>%s"
+        % (fmt_coin(stats["fall"], coin, False), usd_note(stats["fall"], coin, prices)),
+        "• ⚖ Tổng biến động gộp (tăng + giảm): <b>%s</b>%s"
+        % (fmt_coin(gross, coin, False), usd_note(gross, coin, prices)),
         "• 🧭 Thay đổi ròng: <b>%s</b>%s" % (fmt_coin(net, coin, True), usd_note(net, coin, prices)),
         direction_line(net),
     ]
@@ -690,8 +698,10 @@ def build_report(records, coin, tf, prices, exchanges=None):
 
     blocks.append(
         "<i>Đây là chênh lệch số dư các ví được DefiLlama gắn nhãn thuộc sàn — không phải "
-        "khối lượng nạp/rút (nạp 500 rút 500 trong ngày vẫn ra 0). Sàn đổi nhà lưu ký hoặc "
-        "thêm ví mới cũng làm số liệu nhảy. Mốc 24h/7d/30d tính giữa các lần chốt ngày 00:00 UTC.</i>\n"
+        "khối lượng nạp/rút (nạp 500 rút 500 trong ngày vẫn ra 0). Tổng tăng/tổng giảm là cộng "
+        "chênh lệch của từng sàn (mỗi sàn chỉ tính một chiều), tổng gộp = tổng tăng + tổng giảm. "
+        "Sàn đổi nhà lưu ký hoặc thêm ví mới cũng làm số liệu nhảy. "
+        "Mốc 24h/7d/30d tính giữa các lần chốt ngày 00:00 UTC.</i>\n"
         "Gõ /help để xem lệnh."
     )
     return blocks

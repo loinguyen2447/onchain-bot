@@ -111,8 +111,9 @@ change = reserve(snapshot chốt ngày 00:00 UTC) − reserve(mốc trước đ�
   so sánh vài giờ — phần đầu báo cáo ghi rõ mốc cách bao nhiêu giờ.
 - Dự trữ được gộp theo coin gốc: `BTC + WBTC + BTCB + cbBTC`, `ETH + WETH + stETH…`,
   `USDT + USDC + FDUSD`, `SOL + BNSOL + jitoSOL`, `XRP + WXRP`, `BNB + WBNB`.
-- Tổng hợp 8 sàn: tổng phần tăng, tổng phần giảm, thay đổi ròng = tăng − giảm.
-  Đây là **tổng gộp**, không phải net của từng sàn.
+- Tổng hợp 8 sàn: **tổng tăng** = cộng các sàn có dự trữ tăng, **tổng giảm** = cộng các
+  sàn có dự trữ giảm, **tổng gộp** = tổng tăng + tổng giảm (mỗi sàn chỉ tính một chiều),
+  **thay đổi ròng** = tổng tăng − tổng giảm. Đây là **tổng gộp**, không phải net của từng sàn.
 - Giá USD: `coins.llama.fi` (dự phòng: Binance ticker). Không lấy được giá thì ẩn phần USD.
 - Không có số liệu giả: sàn nào DefiLlama không có dữ liệu cho coin đó thì bỏ khỏi bảng.
 

@@ -36,6 +36,10 @@ def rising_btc_snapshots(days=31, start=1000.0, step=10.0):
     return make_snapshots([{"BTC": start + idx * step} for idx in range(days)])
 
 
+def falling_btc_snapshots(days=31, start=500.0, step=5.0):
+    return make_snapshots([{"BTC": start - idx * step} for idx in range(days)])
+
+
 class FakeTelegram:
     """Bot API giả: ghi lại request, trả về ok (hỗ trợ cả GET cho installer)."""
 
@@ -231,6 +235,28 @@ class FormatTests(unittest.TestCase):
         self.assertIn("1,300 BTC", text)
         self.assertIn("Binance", text)
         self.assertLessEqual(len(ob.pack_blocks(blocks)[0]), 4096)
+
+    def test_report_shows_gross_totals(self):
+        records = {"binance-cex": rising_btc_snapshots(), "okx": falling_btc_snapshots()}
+        exchanges = [{"slug": "binance-cex", "name": "Binance"},
+                     {"slug": "okx", "name": "OKX"}]
+        text = "\n\n".join(ob.build_report(records, "BTC", "24h", self.prices, exchanges=exchanges))
+        self.assertIn("▲ Tổng tăng dự trữ", text)
+        self.assertIn("+10.0 BTC", text)      # chỉ sàn tăng
+        self.assertIn("▼ Tổng giảm dự trữ", text)
+        self.assertIn("5.00 BTC", text)       # chỉ sàn giảm
+        self.assertIn("Tổng biến động gộp", text)
+        self.assertIn("15.0 BTC", text)       # tổng gộp = 10 + 5
+        self.assertIn("+5.00 BTC", text)      # ròng = 10 − 5
+
+    def test_gross_equals_rise_plus_fall(self):
+        rows = ob.coin_rows({"binance-cex": rising_btc_snapshots(),
+                             "okx": falling_btc_snapshots()}, "BTC")
+        stats = ob.aggregate(rows, "24h")
+        self.assertAlmostEqual(stats["rise"], 10.0)
+        self.assertAlmostEqual(stats["fall"], 5.0)
+        self.assertAlmostEqual(stats["rise"] + stats["fall"], 15.0)
+        self.assertAlmostEqual(stats["net"], 5.0)
 
     def test_html_tags_balanced(self):
         text = "\n\n".join(ob.build_report(self.records, "BTC", "24h", self.prices))
