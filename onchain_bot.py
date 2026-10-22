@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Bot Telegram: dòng tiền on-chain của 8 sàn CEX (DefiLlama Proof-of-Reserves).
+"""Bot Telegram: dự trữ on-chain của 8 sàn CEX (DefiLlama Proof-of-Reserves).
 
-Cơ chế tính giống section "Lượng Coin chuyển lên sàn & rút khỏi sàn" của web:
-    flow = reserve(mới nhất) - reserve(mốc cũ)
-      > 0  -> coin chuyển LÊN sàn (inflow)
-      < 0  -> coin RÚT khỏi sàn (outflow)
-Dữ liệu là chênh lệch số dư ví do DefiLlama tổng hợp, KHÔNG phải số lệnh chuyển.
+Cơ chế tính giống section "Thay đổi dự trữ ròng các sàn" của web:
+    change = reserve(snapshot chốt ngày 00:00 UTC) - reserve(mốc trước đó)
+      > 0  -> dự trữ trong ví sàn TĂNG
+      < 0  -> dự trữ trong ví sàn GIẢM
+Đây là chênh lệch số dư ví do DefiLlama tổng hợp, KHÔNG phải khối lượng nạp/rút:
+nạp 500 BTC và rút 500 BTC trong cùng ngày sẽ ra 0 dù thực tế có 1.000 BTC lưu chuyển.
 
 Chỉ dùng thư viện chuẩn của Python 3.9+ (không cần pip install), chạy tốt trên
 laptop Linux Mint.
@@ -56,7 +57,9 @@ COINS = ("BTC", "ETH", "SOL", "USDT", "XRP", "BNB")
 EXCHANGES = [
     {"slug": "binance-cex", "name": "Binance"},
     {"slug": "okx", "name": "OKX"},
-    {"slug": "coinbase-bridge", "name": "Coinbase"},
+    # KHÔNG dùng "coinbase-bridge": đó là cầu nối cbBTC, không phải ví sàn Coinbase,
+    # và DefiLlama không có hồ sơ Coinbase trong nhóm CEX. KuCoin thì có.
+    {"slug": "kucoin", "name": "KuCoin"},
     {"slug": "bybit", "name": "Bybit"},
     {"slug": "bitfinex", "name": "Bitfinex"},
     {"slug": "robinhood", "name": "Robinhood"},
@@ -81,8 +84,9 @@ BINANCE_SYMBOLS = {
 
 TF_LABEL = {"24h": "24h", "7d": "7 ngày", "30d": "30 ngày"}
 TF_DAYS = {"24h": 1, "7d": 7, "30d": 30}
-KEEP_SNAPSHOTS = 40   # đủ cho mốc 30 ngày + 7 cột ngày
-DAILY_POINTS = 8      # 8 snapshot -> 7 cột ngày
+DAY_SECONDS = 86400
+KEEP_SNAPSHOTS = 120  # đủ cho mốc 30 ngày, kể cả khi DefiLlama chèn snapshot lẻ trong ngày
+DAILY_POINTS = 8      # số cột ngày trong biểu đồ /days
 MAX_MESSAGE = 3900    # Telegram giới hạn 4096 ký tự, chừa biên an toàn
 USER_AGENT = "onchain-cex-bot/1.1 (+linux mint)"
 
@@ -310,8 +314,53 @@ def coin_tracked(tokens_map, coin):
     return any(key in tokens_map for key in COIN_GROUPS.get(coin, (coin,)))
 
 
+def midnight_snapshots(snapshots):
+    """Các snapshot chốt ngày 00:00 UTC (DefiLlama còn chèn snapshot lẻ trong ngày)."""
+    return [snap for snap in snapshots
+            if isinstance(snap.get("date"), (int, float)) and int(snap["date"]) % DAY_SECONDS == 0]
+
+
+def snapshot_at_or_before(pool, target_ts):
+    """Snapshot gần nhất có date <= target_ts (pool đã sắp theo thời gian)."""
+    chosen = None
+    for snap in pool:
+        if float(snap["date"]) <= target_ts:
+            chosen = snap
+        else:
+            break
+    return chosen or (pool[0] if pool else None)
+
+
+def daily_net_changes(snapshots, coin, points):
+    """Chênh lệch dự trữ theo từng NGÀY LỊCH UTC.
+
+    Lấy snapshot cuối của mỗi ngày rồi trừ ngày liền trước — thuần tuý tính từ dữ
+    liệu DefiLlama trả về, không nội suy, không sinh số.
+    """
+    by_day = collections.OrderedDict()
+    for snap in snapshots:
+        if not isinstance(snap.get("date"), (int, float)) or not snap.get("tokens"):
+            continue
+        day = datetime.datetime.fromtimestamp(
+            float(snap["date"]), datetime.timezone.utc).strftime("%Y-%m-%d")
+        by_day[day] = snap  # snapshot cuối cùng của ngày sẽ ghi đè
+    days = list(by_day.values())[-(points + 1):]
+    return [
+        {
+            "date": days[idx]["date"],
+            "diff": coin_qty(days[idx]["tokens"], coin) - coin_qty(days[idx - 1]["tokens"], coin),
+        }
+        for idx in range(1, len(days))
+    ]
+
+
 def coin_rows(records, coin, keep_days=7, exchanges=None):
-    """Mỗi sàn một dòng: dự trữ hiện tại + flow 24h/7d/30d + chuỗi ngày."""
+    """Mỗi sàn một dòng: dự trữ hiện tại + thay đổi 24h/7d/30d + chuỗi ngày.
+
+    Mốc 24h/7d/30d được neo vào snapshot chốt ngày 00:00 UTC, vì DefiLlama chèn
+    thêm snapshot lẻ trong ngày nên không thể lấy snapshots[-2] rồi gọi là "24h"
+    (cửa sổ thực tế khi đó chỉ còn 6-12 giờ).
+    """
     rows = []
     for ex in (exchanges or EXCHANGES):
         snapshots = records.get(ex["slug"])
@@ -320,35 +369,43 @@ def coin_rows(records, coin, keep_days=7, exchanges=None):
         latest = snapshots[-1]
         if not coin_tracked(latest.get("tokens") or {}, coin):
             continue
-        now_qty = coin_qty(latest["tokens"], coin)
+
+        midnights = midnight_snapshots(snapshots)
+        if len(midnights) >= 2:
+            pool, anchor = midnights, midnights[-1]
+        else:  # lịch sử quá ngắn hoặc lệch giờ chốt: dùng chính dữ liệu thô
+            pool, anchor = snapshots, latest
+        anchor_qty = coin_qty(anchor["tokens"], coin)
+
         row = {
             "slug": ex["slug"],
             "name": ex["name"],
-            "hold": now_qty,
+            "hold": coin_qty(latest["tokens"], coin),
             "flow": {},
-            "daily": [],
+            "daily": daily_net_changes(snapshots, coin, keep_days),
             "ts": latest.get("date"),
-            "prev_ts": snapshots[-2].get("date"),
+            "anchor_ts": anchor.get("date"),
+            "past_ts": {},
         }
         for days, key in ((1, "24h"), (7, "7d"), (30, "30d")):
-            if len(snapshots) >= days + 1:
-                row["flow"][key] = now_qty - coin_qty(snapshots[-1 - days]["tokens"], coin)
-            else:
-                row["flow"][key] = None
-        tail = snapshots[-keep_days:]
-        for idx in range(1, len(tail)):
-            row["daily"].append({
-                "date": tail[idx].get("date"),
-                "diff": coin_qty(tail[idx]["tokens"], coin) - coin_qty(tail[idx - 1]["tokens"], coin),
-            })
+            past = snapshot_at_or_before(pool, float(anchor["date"]) - days * DAY_SECONDS)
+            if past is not None and float(past["date"]) < float(anchor["date"]):
+                span = float(anchor["date"]) - float(past["date"])
+                # Lịch sử không đủ dài thì để trống, không lấy mốc xa nhất có rồi dán nhãn 30 ngày.
+                if span >= days * DAY_SECONDS * 0.75:
+                    row["flow"][key] = anchor_qty - coin_qty(past["tokens"], coin)
+                    row["past_ts"][key] = past["date"]
+                    continue
+            row["flow"][key] = None
         rows.append(row)
     rows.sort(key=lambda r: (r["flow"].get("24h") or 0), reverse=True)
     return rows
 
 
 def aggregate(rows, tf):
-    inflow = 0.0
-    outflow = 0.0
+    """Tổng hợp: dự trữ, tổng phần tăng, tổng phần giảm, thay đổi ròng."""
+    rise = 0.0
+    fall = 0.0
     holdings = 0.0
     for row in rows:
         flow = row["flow"].get(tf)
@@ -356,25 +413,25 @@ def aggregate(rows, tf):
         if flow is None:
             continue
         if flow > 0:
-            inflow += flow
+            rise += flow
         elif flow < 0:
-            outflow += -flow
+            fall += -flow
     return {
         "holdings": holdings,
-        "inflow": inflow,
-        "outflow": outflow,
-        "net": inflow - outflow,
+        "rise": rise,
+        "fall": fall,
+        "net": rise - fall,
         "tracked": len(rows),
     }
 
 
-def window_hours(rows):
-    """Số giờ thực tế mà cột '24h' bao phủ (snapshot đóng ngày -> snapshot mới nhất)."""
+def window_hours(rows, tf="24h"):
+    """Số giờ thực tế giữa mốc so sánh và snapshot chốt ngày đang dùng."""
     spans = []
     for row in rows:
         try:
-            spans.append((float(row["ts"]) - float(row["prev_ts"])) / 3600.0)
-        except (TypeError, ValueError):
+            spans.append((float(row["anchor_ts"]) - float(row["past_ts"][tf])) / 3600.0)
+        except (TypeError, ValueError, KeyError):
             continue
     return max(spans) if spans else None
 
@@ -529,21 +586,20 @@ def vn_day(timestamp):
 # ---------------------------------------------------------------------------
 
 def is_significant(row, tf):
-    """Biến động đủ lớn để hiển thị (tránh 0.02 BTC được tính là "nạp ròng")."""
+    """Biến động đủ lớn để hiển thị (tránh 0.02 BTC bị coi là thay đổi dự trữ)."""
     flow = row["flow"].get(tf)
     if flow is None:
         return False
     return abs(flow) >= max(0.01, row["hold"] * 1e-6)
 
 
-def signal_line(coin, net):
-    if coin == "USDT":
-        if net >= 0:
-            return "🟢 Nạp ròng stablecoin → sức mua chuẩn bị vào sàn tăng"
-        return "🟠 Rút ròng stablecoin khỏi sàn → bớt sức mua tại chỗ"
-    if net <= 0:
-        return "🟢 Rút ròng khỏi sàn → dấu hiệu cá voi gom tích lũy"
-    return "🔴 Nạp ròng lên sàn → cảnh báo áp lực xả"
+def direction_line(net):
+    """Chỉ mô tả chiều thay đổi của dự trữ — không suy ra hành vi mua/bán."""
+    if net > 0:
+        return "▲ Dự trữ trong ví sàn đang TĂNG so với mốc so sánh"
+    if net < 0:
+        return "▼ Dự trữ trong ví sàn đang GIẢM so với mốc so sánh"
+    return "＝ Dự trữ trong ví sàn không đổi so với mốc so sánh"
 
 
 def price_of(prices, coin):
@@ -565,26 +621,26 @@ def build_report(records, coin, tf, prices, exchanges=None):
     stats = aggregate(rows, tf)
     net = stats["net"]
     latest = snapshot_time(rows)
-    hours = window_hours(rows)
+    hours = window_hours(rows, tf)
     price = price_of(prices, coin)
 
     blocks = []
     header = [
-        "🏦 <b>DÒNG TIỀN ON-CHAIN · %d SÀN CEX</b>" % len(exchanges or EXCHANGES),
-        "<i>DefiLlama Proof-of-Reserves · khung %s</i>" % TF_LABEL[tf],
-        "🕒 Snapshot: <b>%s</b> (giờ VN)" % vn_time(latest),
+        "🏦 <b>DỰ TRỮ ON-CHAIN · %d SÀN CEX</b>" % len(exchanges or EXCHANGES),
+        "<i>DefiLlama Proof-of-Reserves · mốc %s</i>" % TF_LABEL[tf],
+        "🕒 Snapshot mới nhất: <b>%s</b> (giờ VN)" % vn_time(latest),
     ]
-    if tf == "24h" and hours:
-        header.append("<i>Cửa sổ thực tế ≈ %.1f giờ (snapshot đóng ngày → mới nhất)</i>" % hours)
+    if hours:
+        header.append("<i>So sánh giữa 2 lần chốt ngày 00:00 UTC, cách nhau %.0f giờ</i>" % hours)
     blocks.append("\n".join(header))
 
     overview = [
         "<b>💰 %s — tổng hợp %d sàn</b>" % (coin, stats["tracked"]),
-        "• Dự trữ: <b>%s</b>%s" % (fmt_coin(stats["holdings"], coin), usd_note(stats["holdings"], coin, prices)),
-        "• ▲ Nạp lên sàn: <b>%s</b>%s" % (fmt_coin(stats["inflow"], coin, True), usd_note(stats["inflow"], coin, prices)),
-        "• ▼ Rút khỏi sàn: <b>%s</b>%s" % (fmt_coin(-stats["outflow"], coin, True), usd_note(stats["outflow"], coin, prices)),
-        "• 🧭 Netflow: <b>%s</b>%s" % (fmt_coin(net, coin, True), usd_note(net, coin, prices)),
-        signal_line(coin, net),
+        "• Dự trữ hiện tại: <b>%s</b>%s" % (fmt_coin(stats["holdings"], coin), usd_note(stats["holdings"], coin, prices)),
+        "• ▲ Sàn TĂNG dự trữ: <b>%s</b>%s" % (fmt_coin(stats["rise"], coin, True), usd_note(stats["rise"], coin, prices)),
+        "• ▼ Sàn GIẢM dự trữ: <b>%s</b>%s" % (fmt_coin(stats["fall"], coin, False), usd_note(stats["fall"], coin, prices)),
+        "• 🧭 Thay đổi ròng: <b>%s</b>%s" % (fmt_coin(net, coin, True), usd_note(net, coin, prices)),
+        direction_line(net),
     ]
     if price and coin != "USDT":
         overview.append("<i>Giá quy đổi: %s</i>" % fmt_price(price))
@@ -605,7 +661,7 @@ def build_report(records, coin, tf, prices, exchanges=None):
         ))
     table = "<b>🏦 Theo sàn (%s)</b>\n<pre>%s\n%s</pre>" % (
         TF_LABEL[tf],
-        "Sàn".ljust(name_width) + "    " + "Flow".rjust(10) + "  " + "Dự trữ".rjust(12),
+        "Sàn".ljust(name_width) + "    " + "Δ dự trữ".rjust(10) + "  " + "Dự trữ".rjust(12),
         "\n".join(body),
     )
     blocks.append(table)
@@ -614,7 +670,7 @@ def build_report(records, coin, tf, prices, exchanges=None):
     if meaningful:
         top_in = max(meaningful, key=lambda r: r["flow"][tf])
         top_out = min(meaningful, key=lambda r: r["flow"][tf])
-        movers = ["<b>⚡️ Biến động mạnh nhất (%s)</b>" % TF_LABEL[tf]]
+        movers = ["<b>⚡️ Thay đổi dự trữ mạnh nhất (%s)</b>" % TF_LABEL[tf]]
         if (top_in["flow"].get(tf) or 0) > 0:
             movers.append("▲ %s: <b>%s</b>" % (html.escape(top_in["name"]),
                                                fmt_coin(top_in["flow"][tf], coin, True)))
@@ -624,8 +680,8 @@ def build_report(records, coin, tf, prices, exchanges=None):
         if len(movers) > 1:
             blocks.append("\n".join(movers))
 
-    # Netflow 6 coin để nhìn bức tranh tổng thể.
-    other_lines = ["<b>🪙 Netflow các coin (%s)</b>" % TF_LABEL[tf]]
+    # Thay đổi ròng của 6 coin để nhìn bức tranh tổng thể.
+    other_lines = ["<b>🪙 Thay đổi ròng các coin (%s)</b>" % TF_LABEL[tf]]
     for sym in COINS:
         sym_stats = aggregate(coin_rows(records, sym, exchanges=exchanges), tf)
         marker = " (đang xem)" if sym == coin else ""
@@ -633,8 +689,9 @@ def build_report(records, coin, tf, prices, exchanges=None):
     blocks.append("\n".join(other_lines))
 
     blocks.append(
-        "<i>Inflow/Outflow = chênh lệch số dư ví on-chain, không phải số lệnh chuyển. "
-        "Khung 24h tính từ snapshot đóng ngày gần nhất đến snapshot mới nhất nên có thể chưa đủ 24 giờ.</i>\n"
+        "<i>Đây là chênh lệch số dư các ví được DefiLlama gắn nhãn thuộc sàn — không phải "
+        "khối lượng nạp/rút (nạp 500 rút 500 trong ngày vẫn ra 0). Sàn đổi nhà lưu ký hoặc "
+        "thêm ví mới cũng làm số liệu nhảy. Mốc 24h/7d/30d tính giữa các lần chốt ngày 00:00 UTC.</i>\n"
         "Gõ /help để xem lệnh."
     )
     return blocks
@@ -668,7 +725,8 @@ def build_days(records, coin, exchanges=None):
     return [
         "<b>📅 %s · %d ngày gần nhất (tổng các sàn)</b>" % (coin, length),
         "<pre>%s</pre>" % "\n".join(lines),
-        "<i>█ = nạp lên sàn, ▒ = rút khỏi sàn.</i>",
+        "<i>█ = dự trữ tăng, ▒ = dự trữ giảm (chênh lệch giữa 2 lần chốt ngày 00:00 UTC). "
+        "Cột cuối là hôm nay, chưa chốt hết ngày.</i>",
     ]
 
 
@@ -676,37 +734,37 @@ def build_top(records, coin, tf, exchanges=None):
     rows = coin_rows(records, coin, exchanges=exchanges)
     if not rows:
         return ["Chưa có dữ liệu cho %s." % coin]
-    inflow = sorted([r for r in rows if (r["flow"].get(tf) or 0) > 0 and is_significant(r, tf)],
+    rising = sorted([r for r in rows if (r["flow"].get(tf) or 0) > 0 and is_significant(r, tf)],
                     key=lambda r: r["flow"][tf], reverse=True)
-    outflow = sorted([r for r in rows if (r["flow"].get(tf) or 0) < 0 and is_significant(r, tf)],
+    falling = sorted([r for r in rows if (r["flow"].get(tf) or 0) < 0 and is_significant(r, tf)],
                      key=lambda r: r["flow"][tf])
     blocks = ["<b>🏆 Xếp hạng %s · %s</b>" % (coin, TF_LABEL[tf])]
-    blocks.append("<b>▲ Nạp lên sàn nhiều nhất</b>\n" + (
+    blocks.append("<b>▲ Dự trữ tăng nhiều nhất</b>\n" + (
         "\n".join("• %s: <b>%s</b>" % (html.escape(r["name"]), fmt_coin(r["flow"][tf], coin, True))
-                  for r in inflow[:3]) or "<i>Không sàn nào nạp ròng.</i>"
+                  for r in rising[:3]) or "<i>Không sàn nào tăng dự trữ.</i>"
     ))
-    blocks.append("<b>▼ Rút khỏi sàn nhiều nhất</b>\n" + (
+    blocks.append("<b>▼ Dự trữ giảm nhiều nhất</b>\n" + (
         "\n".join("• %s: <b>%s</b>" % (html.escape(r["name"]), fmt_coin(r["flow"][tf], coin, True))
-                  for r in outflow[:3]) or "<i>Không sàn nào rút ròng.</i>"
+                  for r in falling[:3]) or "<i>Không sàn nào giảm dự trữ.</i>"
     ))
     return blocks
 
 
-HELP_TEXT = """<b>🤖 Bot dòng tiền on-chain CEX</b>
-Theo dõi 8 sàn: Binance, OKX, Coinbase, Bybit, Bitfinex, Robinhood, Bitget, Gate.io — dữ liệu DefiLlama (Proof-of-Reserves).
+HELP_TEXT = """<b>🤖 Bot dự trữ on-chain CEX</b>
+Theo dõi 8 sàn: Binance, OKX, KuCoin, Bybit, Bitfinex, Robinhood, Bitget, Gate.io — dữ liệu DefiLlama (Proof-of-Reserves).
 
 <b>Lệnh:</b>
 /now — báo cáo đầy đủ coin đang xem
 /coin BTC|ETH|SOL|USDT|XRP|BNB — đổi coin
 /btc /eth /sol /usdt /xrp /bnb — xem nhanh coin đó
-/tf 24h|7d|30d — đổi khung thời gian
-/top — xếp hạng nạp/rút ròng
-/days — 7 ngày gần nhất (biểu đồ thanh)
+/tf 24h|7d|30d — mốc chốt ngày 00:00 UTC
+/top — xếp hạng sàn tăng/giảm dự trữ
+/days — 8 ngày gần nhất (biểu đồ thanh)
 /id — lấy chat id của bạn
 /help — trợ giúp
 
 <i>Gửi tin nhắn bất kỳ (không cần lệnh) để nhận báo cáo ngay.</i>
-<i>Inflow/Outflow = chênh lệch số dư ví, không phải số lệnh chuyển.</i>"""
+<i>Số liệu = chênh lệch số dư ví sàn, không phải khối lượng nạp/rút.</i>"""
 
 
 # ---------------------------------------------------------------------------

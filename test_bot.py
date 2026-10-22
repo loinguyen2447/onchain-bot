@@ -147,12 +147,12 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual(row["flow"]["7d"], 70.0)
         self.assertAlmostEqual(row["flow"]["30d"], 300.0)
         self.assertAlmostEqual(row["hold"], 1300.0)
-        self.assertEqual(len(row["daily"]), 6)  # keep_days=7 -> 6 delta
+        self.assertEqual(len(row["daily"]), 7)  # keep_days=7 -> 7 delta giữa 8 ngày
 
         agg = ob.aggregate(rows, "24h")
         self.assertAlmostEqual(agg["holdings"], 1300.0)
-        self.assertAlmostEqual(agg["inflow"], 10.0)
-        self.assertAlmostEqual(agg["outflow"], 0.0)
+        self.assertAlmostEqual(agg["rise"], 10.0)
+        self.assertAlmostEqual(agg["fall"], 0.0)
         self.assertAlmostEqual(agg["net"], 10.0)
 
     def test_short_history_marks_30d_missing(self):
@@ -173,6 +173,51 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual(ob.window_hours(rows), 24.0)
 
 
+MIDNIGHT = (BASE_TS // DAY) * DAY  # mốc 00:00 UTC cố định
+
+
+class AnchorTests(unittest.TestCase):
+    """Mốc 24h/7d/30d phải neo vào snapshot chốt ngày 00:00 UTC."""
+
+    def test_24h_uses_day_close_not_last_intraday_snapshot(self):
+        snapshots = [
+            {"date": MIDNIGHT, "tokens": {"BTC": 1000.0}},
+            {"date": MIDNIGHT + DAY, "tokens": {"BTC": 1010.0}},
+            {"date": MIDNIGHT + 2 * DAY, "tokens": {"BTC": 1020.0}},
+            # snapshot lẻ trong ngày: dự trữ nhảy mạnh, không được tính vào mốc 24h
+            {"date": MIDNIGHT + 2 * DAY + 12 * 3600, "tokens": {"BTC": 1500.0}},
+        ]
+        row = ob.coin_rows({"binance-cex": snapshots}, "BTC")[0]
+        self.assertAlmostEqual(row["hold"], 1500.0)          # dự trữ = snapshot mới nhất
+        self.assertAlmostEqual(row["flow"]["24h"], 10.0)    # 1020 - 1010 (chốt ngày)
+        self.assertAlmostEqual(ob.window_hours([row]), 24.0)
+
+    def test_short_history_leaves_30d_empty(self):
+        snapshots = [{"date": MIDNIGHT + idx * DAY, "tokens": {"BTC": 500.0 + idx}}
+                     for idx in range(5)]
+        row = ob.coin_rows({"binance-cex": snapshots}, "BTC")[0]
+        self.assertAlmostEqual(row["flow"]["24h"], 1.0)
+        self.assertIsNone(row["flow"]["30d"])
+
+    def test_daily_series_one_bar_per_calendar_day(self):
+        snapshots = [
+            {"date": MIDNIGHT, "tokens": {"BTC": 100.0}},
+            {"date": MIDNIGHT + DAY, "tokens": {"BTC": 110.0}},
+            {"date": MIDNIGHT + DAY + 6 * 3600, "tokens": {"BTC": 90.0}},
+            {"date": MIDNIGHT + 2 * DAY, "tokens": {"BTC": 120.0}},
+        ]
+        row = ob.coin_rows({"binance-cex": snapshots}, "BTC", keep_days=7)[0]
+        diffs = [round(item["diff"], 2) for item in row["daily"]]
+        # ngày 1: 90 (snapshot cuối ngày) - 100; ngày 2: 120 - 90
+        self.assertEqual(diffs, [-10.0, 30.0])
+
+    def test_exchange_list_uses_real_cex_slugs(self):
+        slugs = [ex["slug"] for ex in ob.EXCHANGES]
+        self.assertIn("kucoin", slugs)
+        self.assertNotIn("coinbase-bridge", slugs)
+        self.assertEqual(len(slugs), 8)
+
+
 class FormatTests(unittest.TestCase):
     def setUp(self):
         self.records = {"binance-cex": rising_btc_snapshots()}
@@ -181,7 +226,7 @@ class FormatTests(unittest.TestCase):
     def test_report_contains_expected_numbers(self):
         blocks = ob.build_report(self.records, "BTC", "24h", self.prices)
         text = "\n\n".join(blocks)
-        self.assertIn("DÒNG TIỀN ON-CHAIN", text)
+        self.assertIn("DỰ TRỮ ON-CHAIN", text)
         self.assertIn("+10.0 BTC", text)
         self.assertIn("1,300 BTC", text)
         self.assertIn("Binance", text)
@@ -267,7 +312,7 @@ class CommandTests(unittest.TestCase):
         payload = self.telegram.requests[0]["payload"]
         self.assertEqual(payload["chat_id"], 42)
         self.assertEqual(payload["parse_mode"], "HTML")
-        self.assertIn("DÒNG TIỀN ON-CHAIN", payload["text"])
+        self.assertIn("DỰ TRỮ ON-CHAIN", payload["text"])
 
     def test_unknown_chat_is_ignored(self):
         self.send("hello", chat_id=999)
@@ -282,7 +327,7 @@ class CommandTests(unittest.TestCase):
         self.send("/help")
         self.send("/khongco")
         texts = [req["payload"]["text"] for req in self.telegram.requests]
-        self.assertIn("🤖 Bot dòng tiền on-chain CEX", texts[0])
+        self.assertIn("🤖 Bot dự trữ on-chain CEX", texts[0])
         self.assertIn("Lệnh không hợp lệ", texts[1])
 
     def test_set_timeframe_persists(self):
@@ -303,7 +348,7 @@ class CommandTests(unittest.TestCase):
     def test_now_command_uses_cache(self):
         self.send("/now")
         self.assertEqual(len(self.telegram.requests), 1)
-        self.assertIn("DÒNG TIỀN ON-CHAIN", self.telegram.requests[0]["payload"]["text"])
+        self.assertIn("DỰ TRỮ ON-CHAIN", self.telegram.requests[0]["payload"]["text"])
 
 
 class InstallerTests(unittest.TestCase):
@@ -393,10 +438,10 @@ class InstallerTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("RUN_LIVE") == "1", "đặt RUN_LIVE=1 để test dữ liệu thật")
 class LiveTests(unittest.TestCase):
     def test_fetch_real_exchange(self):
-        snapshots = ob.fetch_snapshots("coinbase-bridge", timeout=60, keep=8)
+        snapshots = ob.fetch_snapshots("kucoin", timeout=60, keep=90)
         self.assertGreaterEqual(len(snapshots), 2)
         self.assertIn("tokens", snapshots[-1])
-        rows = ob.coin_rows({"coinbase-bridge": snapshots}, "BTC")
+        rows = ob.coin_rows({"kucoin": snapshots}, "BTC")
         self.assertTrue(rows and rows[0]["hold"] > 0)
 
     def test_fetch_live_prices(self):

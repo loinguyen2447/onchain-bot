@@ -1,7 +1,7 @@
-# Bot Telegram — dòng tiền on-chain 8 sàn CEX
+# Bot Telegram — dự trữ on-chain 8 sàn CEX
 
-Bot gửi cho bạn đúng thông tin của section **“Lượng Coin chuyển lên sàn & rút khỏi sàn”** trên web:
-Binance, OKX, Coinbase, Bybit, Bitfinex, Robinhood, Bitget, Gate.io — dữ liệu Proof-of-Reserves từ DefiLlama.
+Bot gửi cho bạn đúng thông tin của section **“Thay đổi dự trữ ròng các sàn”** trên web:
+Binance, OKX, KuCoin, Bybit, Bitfinex, Robinhood, Bitget, Gate.io — dữ liệu Proof-of-Reserves từ DefiLlama.
 
 - Không cần `pip install`: chỉ dùng thư viện chuẩn của Python 3.8+ (Linux Mint có sẵn).
 - **Tự gửi báo cáo 8:00 sáng và 8:00 tối** mỗi ngày; **nhắn tin bất kỳ cho bot là nhận báo cáo ngay**.
@@ -88,31 +88,41 @@ Gửi tin nhắn bất kỳ (không cần lệnh) → bot trả báo cáo mới 
 | `/now refresh` | Tải lại DefiLlama rồi báo cáo (chậm vài phút) |
 | `/btc` `/eth` `/sol` `/usdt` `/xrp` `/bnb` | Xem nhanh một coin |
 | `/coin ETH` | Đổi coin đang xem |
-| `/tf 24h` `/tf 7d` `/tf 30d` | Đổi khung thời gian |
-| `/top` | 3 sàn nạp ròng / rút ròng mạnh nhất |
-| `/days` | 7 ngày gần nhất, biểu đồ thanh |
+| `/tf 24h` `/tf 7d` `/tf 30d` | Đổi mốc so sánh (chốt ngày 00:00 UTC) |
+| `/top` | 3 sàn tăng / giảm dự trữ mạnh nhất |
+| `/days` | 8 ngày gần nhất, biểu đồ thanh |
 | `/id` | Lấy chat id |
 | `/help` | Trợ giúp |
 
 ## 6. Cơ chế tính (giống web)
 
 ```
-flow = reserve(snapshot mới nhất) − reserve(snapshot mốc)
-  > 0  → coin chuyển LÊN sàn (inflow)
-  < 0  → coin rút KHỎI sàn (outflow)
+change = reserve(snapshot chốt ngày 00:00 UTC) − reserve(mốc trước đó)
+  > 0  → dự trữ trong ví sàn TĂNG
+  < 0  → dự trữ trong ví sàn GIẢM
 ```
 
-- Mốc: `24h` = snapshot liền trước, `7d` = 8 snapshot trước, `30d` = 31 snapshot trước.
+- Mốc neo vào **snapshot chốt ngày 00:00 UTC**, không phải snapshot liền trước:
+  DefiLlama chèn thêm snapshot lẻ trong ngày, nên lấy `snapshots[-2]` rồi gọi là "24h" thì
+  cửa sổ thực tế chỉ còn 6–12 giờ. `24h` = chốt hôm nay so với chốt hôm qua,
+  `7d`/`30d` = lùi đúng 7/30 lần chốt ngày. Lịch sử không đủ dài thì để trống (`—`),
+  không lấy mốc xa nhất có rồi dán nhãn 30 ngày.
+- Dự trữ hiện tại = snapshot mới nhất (kể cả snapshot lẻ trong ngày), nên có thể lệch mốc
+  so sánh vài giờ — phần đầu báo cáo ghi rõ mốc cách bao nhiêu giờ.
 - Dự trữ được gộp theo coin gốc: `BTC + WBTC + BTCB + cbBTC`, `ETH + WETH + stETH…`,
   `USDT + USDC + FDUSD`, `SOL + BNSOL + jitoSOL`, `XRP + WXRP`, `BNB + WBNB`.
-- Tổng hợp 8 sàn: inflow = tổng các flow dương, outflow = tổng các flow âm,
-  netflow = inflow − outflow. Đây là **tổng gộp**, không phải net của từng sàn.
+- Tổng hợp 8 sàn: tổng phần tăng, tổng phần giảm, thay đổi ròng = tăng − giảm.
+  Đây là **tổng gộp**, không phải net của từng sàn.
 - Giá USD: `coins.llama.fi` (dự phòng: Binance ticker). Không lấy được giá thì ẩn phần USD.
 - Không có số liệu giả: sàn nào DefiLlama không có dữ liệu cho coin đó thì bỏ khỏi bảng.
 
-**Lưu ý:** đây là chênh lệch số dư ví, không phải số lệnh chuyển. Khung “24h” thực chất là
-từ snapshot đóng ngày gần nhất đến snapshot mới nhất (thường 6–12 giờ), nên con số nhỏ hơn
-24 giờ trọn vẹn.
+**Lưu ý:** đây là chênh lệch số dư các ví được DefiLlama gắn nhãn thuộc sàn, **không phải
+khối lượng nạp/rút**. Nạp 500 BTC và rút 500 BTC trong cùng ngày sẽ ra 0 dù thực tế có
+1.000 BTC lưu chuyển. Sàn chuyển coin sang ví chưa được theo dõi, đổi nhà lưu ký hoặc thêm
+ví mới cũng làm số liệu nhảy mà không có giao dịch nạp/rút nào.
+
+**Về Coinbase:** DefiLlama không có hồ sơ Coinbase trong nhóm CEX. Slug `coinbase-bridge`
+trước đây bot dùng là cầu nối cbBTC, không phải ví sàn, nên đã thay bằng `kucoin`.
 
 ## 7. Xử lý sự cố
 
